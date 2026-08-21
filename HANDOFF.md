@@ -1,6 +1,6 @@
 # AI Hero 繁體中文字幕 — 交接紀錄
 
-最後更新：2026-08-21
+最後更新：2026-08-21（字幕翻譯與跨機同步皆已完成並驗證）
 
 這份是給「換一個模型／換一個 session 接手」用的完整背景。看完這份應該就能直接動工，不用回頭翻對話。
 
@@ -32,14 +32,14 @@ https://stream.mux.com/{playbackId}.m3u8   ← master
 
 ### 2-1. 使用者腳本（主要成果）
 
-檔案：`aihero-zh-subs.user.js`（v3.3.0，約 996 行）
+檔案：`aihero-zh-subs.user.js`（v3.6.0）
 已安裝在 ego browser 的 Tampermonkey，script uuid：`ee0559d6-ef3d-42cb-bafe-c766f60a4c75`
 
 metadata：
 
 ```javascript
 // @name         AI Hero 繁體中文雙語字幕
-// @version      3.3.0
+// @version      3.6.0
 // @match        https://www.aihero.dev/*
 // @grant        GM_xmlhttpRequest / GM_setValue / GM_getValue / GM_deleteValue
 // @connect      generativelanguage.googleapis.com
@@ -53,11 +53,16 @@ CONFIG（`Object.freeze`）重點：
 
 ```javascript
 engine: 'gemini',                 // 或 'claude'
-gemini: { model: 'gemini-2.5-flash' },
+gemini: { model: 'gemini-2.5-flash',
+          maxOutputTokens: 32768,   // 8192 會被截斷
+          thinkingBudget: 0 },      // thinking 會吃掉輸出額度
 claude: { model: 'claude-opus-5' },
-batchSize: 60,                    // ← 這個是目前 bug 的元凶之一
-maxMergeSpan: 2,                  // 一組最多合併 2 格，硬性上限
+batchSize: 30,                    // 一批太大，輸出會被截斷
+maxRetriesPerBatch: 2,            // 重試深度上限，防無限遞迴
+maxMergeSpan: 4,                  // 一組最多合併 4 格（設 2 會把模型分組全擋掉）
+maxCharsPerLine: 32,              // 超過就在中文標點處切開
 prefetchNextLesson: true,
+sync: { enabled: true, timeoutMs: 8000 },   // 共享字幕伺服器
 style: { zhFontSize: 26, enFontSize: 17, bottomPercent: 8,
          showEnglish: true, maxWidthPercent: 78 },
 panelMode: 'auto',                // 'auto' | 'always' | 'off'
@@ -70,7 +75,8 @@ debug: false,
 1. 從 Next.js 的 RSC payload 撈 `muxPlaybackId`
    （**注意：SSR 出來的 `<mux-player>` 標籤上沒有 `playback-id` 屬性**，要從 RSC payload 拿）
 2. `fetchAllCues(playbackId)` → master m3u8 → 字幕 playlist → 抓全部 VTT 分段 → `parseVtt` → `dedupeCues`
-3. `buildSegments(cues, playbackId)` → 切批 → 丟給 Gemini → `groupsToSegments()`
+3. `buildSegments(cues, playbackId)`：
+   本機快取 → 問共享伺服器 → 都沒有才切批丟給 Gemini → 整集翻完自動上傳
 4. `startRendering(video, segments, overlay)` → 100ms interval + `muteNativeCaptions()`
 5. `prefetchNext()` 背景把下一集也翻好
 
@@ -83,11 +89,15 @@ debug: false,
 | `findSegmentAt` | 二分搜尋當下該顯示哪一句 |
 | `muteNativeCaptions` | 每次 render tick 把播放器內建字幕軌設成 `disabled` |
 | `createOverlay(player, settings)` | **掛在 `player` 本身，不是 `player.parentElement`** |
+| `translateSlice` | 翻一段字幕；沒翻到的區段自動切小重試，**只重送缺口**以省 API 額度 |
+| `splitLongSegment` | 中文太長時在標點處切塊，時間按字數比例分（**切點不可含空白**，見踩坑區）|
+| `getSyncConfig` / `writeSyncConfig` | 讀寫共享伺服器設定；沒設定就安靜回 `null`，不彈任何視窗 |
+| `fetchRemoteSegments` / `uploadSegments` | 跟共享伺服器讀寫；**任何失敗都吞掉**，絕不拖垮翻譯 |
 | `markAsDoNotTranslate` | 加 `translate="no"`、`notranslate`、`immersive-translate-ignore`，避免跟現有翻譯外掛打架 |
 
 快取：`CACHE_VERSION = 'v5'`，key 是 `zhsub_cache_v5_{engine}_{playbackId}`，存合併後的 segment 陣列。
 
-### 2-2. Cloudflare Worker 共享快取（已部署，但腳本還沒接上）
+### 2-2. Cloudflare Worker 共享快取（已部署，腳本已接上並驗證）
 
 目的：換電腦不用重翻，未來也能分享給別人。
 
@@ -128,7 +138,7 @@ Token：`READ_TOKEN`（`zr_` 開頭）、`WRITE_TOKEN`（`zw_` 開頭），
 
 ---
 
-## 三、現在卡住的 bug（這是接手第一件要修的事）
+## 三、已修好的三個 bug（診斷紀錄，留著避免重蹈）
 
 ### 症狀
 
@@ -231,40 +241,52 @@ if (failed === 0) writeCachedSegments(playbackId, segments)
 
 ---
 
-## 四、還沒做的事
+## 四、發佈方式與現況
 
-1. **把新版裝進瀏覽器**（唯一擋在路上的事）
-   - ego 的 agent task space **開不了瀏覽器內部頁面**：`chrome://extensions` 和
-     Tampermonkey 的編輯器頁 `chrome-extension://…` 都是一開就卡死，`wait: false` 也一樣。
-     所以這一步 agent 做不到，要人工。
-   - 做法：在**自己平常的瀏覽器視窗**開 `http://127.0.0.1:8777/aihero.user.js`
-     （先在 `aihero-zh-subs/` 起 `python3 -m http.server 8777 --bind 127.0.0.1`），
-     Tampermonkey 會認出 `@name` + `@namespace` 相同而提供「更新」，不會變成兩份。
-   - 裝完 setting-up-the-project 那一集要**手動按一次「重新翻譯這一集」**，
-     因為舊的壞快取還在（故意不跳 CACHE_VERSION，跳了會讓另外四集也作廢、白燒額度）。
+### 兩種版本，用途不同
 
-2. **把腳本接上 Worker**
-   - 翻譯前先 `GET /subs/{playbackId}`
-   - miss 才自己翻，翻完 `PUT` 上去
-   - sync URL 跟 token 存在 GM storage，像 API key 一樣用 prompt 問
-     → 這樣腳本本身還是可以安全分享出去
+| 版本 | 放在哪 | 給誰 | 特點 |
+|---|---|---|---|
+| **公開版** | GitHub repo `aihero-zh-subs` | 朋友、任何人 | 乾淨無憑證，裝完自己填設定；有 `@updateURL` 會自動更新 |
+| **私人版** | secret gist（**網址不寫進版控**） | 老闆自己的電腦 | 同步網址與 token 已預填，裝完即用；**刻意拿掉 `@updateURL`** |
 
-3. **跨電腦同步腳本本身**
-   - 現況：Tampermonkey 預設**不會**跨電腦同步，要手動貼
-   - 解法 A：Tampermonkey 內建雲端同步（Utilities → Sync，可接 Google Drive / Dropbox / OneDrive / WebDAV）
-   - 解法 B（推薦）：腳本丟 GitHub raw／gist，metadata 加 `@updateURL` + `@downloadURL`
-   - 前提：`aihero-zh-subs/` 目前在 git 裡是 **untracked**，要先 commit 才能做，
-     也才能用真正的 worktree 派工（現在派工是用 `orca terminal create --worktree active`
-     在現有 checkout 上開終端機，因為新 worktree 不會有 untracked 的檔案）
-   - 注意：字幕快取的跨機同步是 Worker 在管，跟腳本本體同步是兩件事
+私人版一定要拿掉 `@updateURL`，否則會被公開版覆蓋，預填的設定就沒了。
+**因此公開版每次更新後，私人版要重新產一次。**
 
-4. **通用多播放器外掛** — 老闆選過這個方向，但後來說「現在不要先做太麻煩」，先擱著
+產生私人版的做法：把 `getSyncConfig` 改成讀不到 GM 值時 fallback 到
+`DEFAULT_SYNC_URL` / `DEFAULT_SYNC_TOKEN` 兩個常數，`@name` 加註「（私人版）」以免
+Tampermonkey 跟公開版混淆，然後 `gh gist create`（預設就是 secret）。
+產生的檔案放 `/tmp` 並在建立 gist 後立刻刪除，**絕對不要留在專案目錄**，避免誤 commit。
 
-5. 待老闆回報：斷句長度現在感覺如何、有沒有非台灣用詞、有沒有句子被切在奇怪的地方
+### 同步已驗證通過（兩個方向都獨立驗過）
+
+**上傳**：翻完一集後，繞過腳本直接 `curl` 問 Worker，
+確認該集 113 筆字幕確實存在、全部有中文、段落數與面板顯示一致。
+
+**下載**：把 `CACHE_VERSION` 暫時改成 `v6test` 讓本機快取全部落空
+（測完換回 `v5`，原有快取完好無損），重開頁面後狀態依序出現
+`查詢共享字幕… → 字幕就緒（113/113 句，來自共享）`，**完全沒有重新翻譯**。
+
+這個「暫時改快取版本號」的手法很好用：可以在不破壞既有快取的前提下，
+模擬「一台全新電腦」的狀態。
+
+## 五、還沒做的事
+
+1. **通用多播放器外掛** — 老闆選過這個方向，但後來說「現在不要先做太麻煩」，先擱著
+
+2. **自動更新尚未實測成功** — `@updateURL` / `@downloadURL` 已加入公開版，
+   但 Tampermonkey 的更新檢查是照自己的排程跑，在控制台、工具頁、腳本設定頁
+   都找不到手動觸發的入口，所以**沒能當場證明它會生效**。
+   留了一個天然探針：GitHub 上曾短暫是 3.4.2 而本機是 3.4.1。
+   若確認被「本機修改」標記擋住，改用從 gist/URL 重裝一次即可
+   （代價是 GM 儲存區歸零，API key 要重輸、本機快取重建 —— 但字幕本身在 Worker 上，
+   所以其實不痛）。
+
+3. 待老闆回報：斷句長度現在感覺如何、有沒有非台灣用詞、有沒有句子被切在奇怪的地方
 
 ---
 
-## 五、踩過的坑（不要再踩一次）
+## 六、踩過的坑（不要再踩一次）
 
 ### 字幕抓取
 
@@ -382,7 +404,7 @@ if (failed === 0) writeCachedSegments(playbackId, segments)
 
 ---
 
-## 六、除錯用的招式（很好用，留著）
+## 七、除錯用的招式（很好用，留著）
 
 要看整集字幕長什麼樣，不用真的播放 — 直接 seek 然後讀 overlay：
 
@@ -406,7 +428,7 @@ new MutationObserver(push).observe(st, {childList:true, subtree:true, characterD
 
 ---
 
-## 七、環境
+## 八、環境
 
 - wrangler 4.124.0，OAuth 登入（帳號見本機 `wrangler whoami`），scope 含 `workers_kv (write)`
 - R2 也可用（bucket `fishtv`），但這個專案沒用到
