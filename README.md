@@ -21,7 +21,7 @@
 點下面的網址，Tampermonkey 會跳出安裝頁：
 
 ```
-https://raw.githubusercontent.com/OWNER/REPO/main/aihero-zh-subs.user.js
+https://raw.githubusercontent.com/fishtvlvoe/aihero-zh-subs/main/aihero-zh-subs.user.js
 ```
 
 第一次在課程頁面上會跳視窗問你的 API key，貼進去就好。

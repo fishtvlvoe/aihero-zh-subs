@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Hero 繁體中文雙語字幕
 // @namespace    fishtv.aihero.zhsub
-// @version      3.4.0
+// @version      3.4.1
 // @description  抓 Mux 的英文字幕檔翻成台灣繁體中文，在影片上疊中英雙語字幕
 // @author       fish
 // @match        https://www.aihero.dev/*
@@ -13,6 +13,10 @@
 // @connect      api.anthropic.com
 // @connect      mux.com
 // @connect      stream.mux.com
+// @updateURL    https://raw.githubusercontent.com/fishtvlvoe/aihero-zh-subs/main/aihero-zh-subs.user.js
+// @downloadURL  https://raw.githubusercontent.com/fishtvlvoe/aihero-zh-subs/main/aihero-zh-subs.user.js
+// @supportURL   https://github.com/fishtvlvoe/aihero-zh-subs/issues
+// @homepageURL  https://github.com/fishtvlvoe/aihero-zh-subs
 // @run-at       document-idle
 // ==/UserScript==
 
