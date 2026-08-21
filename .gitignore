@@ -1,0 +1,14 @@
+# 機密：Cloudflare Worker 的讀寫 token，絕對不能進版控
+worker/tokens.local.txt
+**/tokens.local.txt
+.dev.vars
+**/.dev.vars
+.env
+.env.*
+
+# 依賴與建置產物
+node_modules/
+.wrangler/
+
+# macOS
+.DS_Store

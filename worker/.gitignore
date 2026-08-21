@@ -1,0 +1,4 @@
+node_modules/
+.wrangler/
+tokens.local.txt
+.dev.vars

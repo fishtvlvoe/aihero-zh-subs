@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "zhsub-cache",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+  "observability": { "enabled": true },
+  "kv_namespaces": [
+    {
+      "binding": "SUBS",
+      "id": "fed6ed1fc43045be8bdf6aae58e35971"
+    }
+  ]
+}
