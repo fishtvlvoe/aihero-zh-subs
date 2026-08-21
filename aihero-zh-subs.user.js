@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Hero 繁體中文雙語字幕
 // @namespace    fishtv.aihero.zhsub
-// @version      3.5.0
+// @version      3.5.1
 // @description  抓 Mux 的英文字幕檔翻成台灣繁體中文，在影片上疊中英雙語字幕
 // @author       fish
 // @match        https://www.aihero.dev/*
@@ -159,17 +159,19 @@
   const clearApiKey = (engine) => GM_deleteValue(keyStorageName(engine))
 
   // 同步設定存在 Tampermonkey 儲存區，不寫進原始碼，這樣腳本可以安全分享。
-  // 使用者按取消就把 sync 關掉，之後不再打擾。
-  const getSyncConfig = ({ promptIfMissing = true } = {}) => {
+  // 使用者按取消就把 sync 關掉，之後不再打擾（面板可按「設定共享字幕」重設）。
+  const getSyncConfig = ({ promptIfMissing = true, force = false } = {}) => {
     if (!CONFIG.sync.enabled) return null
 
     const settings = readSettings()
-    if (settings.syncDeclined) return null
+    if (settings.syncDeclined && !force) return null
 
     let url = GM_getValue(STORAGE_KEYS.syncUrl, '')
     let token = GM_getValue(STORAGE_KEYS.syncToken, '')
 
-    if ((!url || !token) && promptIfMissing) {
+    const shouldPrompt = force ? promptIfMissing : ((!url || !token) && promptIfMissing)
+
+    if (shouldPrompt) {
       const inputUrl = window.prompt(
         '共享字幕伺服器網址（留空＝不使用，只存本機）\n例如 https://你的-worker 網址',
         url || ''
@@ -191,6 +193,15 @@
 
     if (!url || !token) return null
     return { url, token }
+  }
+
+  // 面板按鈕用。清掉拒絕記號再重新問一次，
+  // 這樣手滑按到取消不會變成永久壞掉。
+  const resetSyncConfig = () => {
+    const settings = readSettings()
+    writeSettings({ ...settings, syncDeclined: false })
+    const config = getSyncConfig({ promptIfMissing: true, force: true })
+    return config
   }
 
   // 從共享伺服器抓這一集的字幕。沒有就回 null，不算錯誤。
@@ -954,7 +965,7 @@
     )
   }
 
-  const createPanel = ({ onRetranslate, onToggleEnglish, onResetKey }) => {
+  const createPanel = ({ onRetranslate, onToggleEnglish, onResetKey, onResetSync }) => {
     document.getElementById(PANEL_ID)?.remove()
     if (CONFIG.panelMode === 'off') return null
 
@@ -1037,6 +1048,7 @@
       makeButton('重新翻譯這一集', onRetranslate),
       makeButton('中英 / 只看中文', onToggleEnglish),
       makeButton('重設 API key', onResetKey),
+      makeButton('設定共享字幕', onResetSync),
       makeButton('收起面板', () => {
         clearTimeout(panelState.collapseTimer)
         setPanelExpanded(false)
@@ -1301,6 +1313,14 @@
       onResetKey: () => {
         clearApiKey(CONFIG.engine)
         setStatus('API key 已清除，重新整理後會再問一次', '#ffd08a')
+      },
+      onResetSync: () => {
+        const config = resetSyncConfig()
+        if (config) {
+          setStatus('共享字幕已設定', '#9de89d')
+        } else {
+          setStatus('未使用共享字幕', '#ffd08a')
+        }
       },
     })
 

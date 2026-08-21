@@ -284,6 +284,25 @@ if (failed === 0) writeCachedSegments(playbackId, segments)
 
 - **prefetch 靜靜地不動作**（查了兩輪）。第一個假設是 `@connect` 少了 `aihero.dev`，加了 `fetchSameOrigin`（原生 fetch + `credentials: 'include'`）還是不動。**真正原因：`run()` 執行的當下，「下一課」那個 `<a>` 還沒被算繪出來。** 解法：`await waitFor(findNextLessonUrl, { tries: 20, intervalMs: 1000 })`。
 
+### 共享字幕設定：拒絕記號會變成永久壞掉
+
+`getSyncConfig` 用 `settings.syncDeclined` 記住「使用者不想用同步」，
+避免每次開影片都彈視窗騷擾。立意沒錯，但原始寫法有個致命問題：
+
+**`window.prompt` 被關掉一次就寫死 `syncDeclined: true`，而且沒有任何回頭路。**
+
+觸發方式比想像中容易：手滑按取消、瀏覽器自動關閉對話框（自動化環境很常見）。
+一旦觸發，同步永久停用，面板上又沒有對應的重設按鈕（只有「重設 API key」）。
+
+實測就踩到了：測試時視窗被自動關掉，儲存區直接寫入 `syncDeclined: true`，
+之後怎麼按重新翻譯都不會再問，也不會上傳。
+
+修法：`getSyncConfig` 加 `force` 參數無視 `syncDeclined`，
+新增 `resetSyncConfig()`，面板加一顆「設定共享字幕」按鈕。
+
+**通則：任何「記住使用者說不要」的旗標，都必須配一個看得見的重設入口。**
+不然一次誤觸就是永久故障，而且使用者完全不知道發生什麼事。
+
 ### 安裝與更新（很容易踩雷）
 
 - **從網址安裝會裝成第二份，不會覆蓋。** Tampermonkey 是靠來源辨識腳本：
