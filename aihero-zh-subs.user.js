@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Hero 繁體中文雙語字幕
 // @namespace    fishtv.aihero.zhsub
-// @version      3.8.0
+// @version      3.8.1
 // @description  抓 Mux 的英文字幕檔翻成台灣繁體中文，在影片上疊中英雙語字幕
 // @author       fish
 // @match        https://www.aihero.dev/*
@@ -86,8 +86,10 @@
     }),
 
     // 翻完再複查一次，抓字面直譯和讀起來不像人話的句子。
-    // 只在第一次翻譯時發生，翻完會快取，所以成本只付一次。
-    review: Object.freeze({ enabled: true }),
+    // 預設關閉：實測把課程簡介餵進提示詞之後，字面直譯的問題就消失了，
+    // 複查沒有再換到額外的品質，卻要多付一倍的 API 呼叫。
+    // 之後若發現翻譯品質退步，把這裡改成 true 就會啟用。
+    review: Object.freeze({ enabled: false }),
 
     // 控制面板：'auto' 平常縮成小圓點、忙碌時自動展開；'always' 一直展開；'off' 完全不顯示
     panelMode: 'auto',
