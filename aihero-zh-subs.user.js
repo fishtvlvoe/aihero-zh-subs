@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Hero 繁體中文雙語字幕
 // @namespace    fishtv.aihero.zhsub
-// @version      3.5.1
+// @version      3.6.0
 // @description  抓 Mux 的英文字幕檔翻成台灣繁體中文，在影片上疊中英雙語字幕
 // @author       fish
 // @match        https://www.aihero.dev/*
@@ -159,49 +159,18 @@
   const clearApiKey = (engine) => GM_deleteValue(keyStorageName(engine))
 
   // 同步設定存在 Tampermonkey 儲存區，不寫進原始碼，這樣腳本可以安全分享。
-  // 使用者按取消就把 sync 關掉，之後不再打擾（面板可按「設定共享字幕」重設）。
-  const getSyncConfig = ({ promptIfMissing = true, force = false } = {}) => {
+  // 沒設定就安靜關閉，不打擾使用者 —— 要設定請用面板上的「共享字幕」表單。
+  const getSyncConfig = () => {
     if (!CONFIG.sync.enabled) return null
-
-    const settings = readSettings()
-    if (settings.syncDeclined && !force) return null
-
-    let url = GM_getValue(STORAGE_KEYS.syncUrl, '')
-    let token = GM_getValue(STORAGE_KEYS.syncToken, '')
-
-    const shouldPrompt = force ? promptIfMissing : ((!url || !token) && promptIfMissing)
-
-    if (shouldPrompt) {
-      const inputUrl = window.prompt(
-        '共享字幕伺服器網址（留空＝不使用，只存本機）\n例如 https://你的-worker 網址',
-        url || ''
-      )
-      if (inputUrl === null || inputUrl.trim() === '') {
-        writeSettings({ ...settings, syncDeclined: true })
-        return null
-      }
-      const inputToken = window.prompt('伺服器存取 token', token || '')
-      if (inputToken === null || inputToken.trim() === '') {
-        writeSettings({ ...settings, syncDeclined: true })
-        return null
-      }
-      url = inputUrl.trim().replace(/\/+$/, '')
-      token = inputToken.trim()
-      GM_setValue(STORAGE_KEYS.syncUrl, url)
-      GM_setValue(STORAGE_KEYS.syncToken, token)
-    }
-
+    const url = GM_getValue(STORAGE_KEYS.syncUrl, '')
+    const token = GM_getValue(STORAGE_KEYS.syncToken, '')
     if (!url || !token) return null
     return { url, token }
   }
 
-  // 面板按鈕用。清掉拒絕記號再重新問一次，
-  // 這樣手滑按到取消不會變成永久壞掉。
-  const resetSyncConfig = () => {
-    const settings = readSettings()
-    writeSettings({ ...settings, syncDeclined: false })
-    const config = getSyncConfig({ promptIfMissing: true, force: true })
-    return config
+  const writeSyncConfig = (url, token) => {
+    GM_setValue(STORAGE_KEYS.syncUrl, String(url || '').trim().replace(/\/+$/, ''))
+    GM_setValue(STORAGE_KEYS.syncToken, String(token || '').trim())
   }
 
   // 從共享伺服器抓這一集的字幕。沒有就回 null，不算錯誤。
@@ -965,7 +934,7 @@
     )
   }
 
-  const createPanel = ({ onRetranslate, onToggleEnglish, onResetKey, onResetSync }) => {
+  const createPanel = ({ onRetranslate, onToggleEnglish, onResetKey }) => {
     document.getElementById(PANEL_ID)?.remove()
     if (CONFIG.panelMode === 'off') return null
 
@@ -1043,12 +1012,111 @@
       return button
     }
 
+    const syncForm = document.createElement('div')
+    syncForm.dataset.role = 'sync-form'
+    syncForm.style.cssText = [
+      'display:none',
+      'margin-top:5px',
+      'padding:8px',
+      'background:#2c2c2c',
+      'border:1px solid #555',
+      'border-radius:6px',
+      'font-size:12px',
+    ].join(';')
+    markAsDoNotTranslate(syncForm)
+
+    const inputStyle = [
+      'display:block',
+      'width:100%',
+      'margin-top:5px',
+      'padding:5px 8px',
+      'background:#1a1a1a',
+      'color:#eee',
+      'border:1px solid #555',
+      'border-radius:6px',
+      'font-size:12px',
+      'box-sizing:border-box',
+    ].join(';')
+
+    const syncUrlInput = document.createElement('input')
+    syncUrlInput.type = 'text'
+    syncUrlInput.placeholder = 'https://xxx.workers.dev'
+    syncUrlInput.style.cssText = inputStyle
+    markAsDoNotTranslate(syncUrlInput)
+
+    const syncTokenInput = document.createElement('input')
+    syncTokenInput.type = 'password'
+    syncTokenInput.placeholder = 'token'
+    syncTokenInput.style.cssText = inputStyle
+    markAsDoNotTranslate(syncTokenInput)
+
+    const syncButtonRow = document.createElement('div')
+    syncButtonRow.style.cssText = 'display:flex;gap:5px;margin-top:5px'
+
+    const makeSyncActionButton = (label, handler) => {
+      const button = document.createElement('button')
+      button.textContent = label
+      button.style.cssText = [
+        'flex:1',
+        'padding:5px 8px',
+        'background:#2c2c2c',
+        'color:#eee',
+        'border:1px solid #555',
+        'border-radius:6px',
+        'cursor:pointer',
+        'font-size:12px',
+      ].join(';')
+      button.addEventListener('click', handler)
+      markAsDoNotTranslate(button)
+      return button
+    }
+
+    const setSyncFormVisible = (visible) => {
+      syncForm.style.display = visible ? '' : 'none'
+    }
+
+    const fillSyncForm = () => {
+      syncUrlInput.value = GM_getValue(STORAGE_KEYS.syncUrl, '')
+      syncTokenInput.value = GM_getValue(STORAGE_KEYS.syncToken, '')
+    }
+
+    syncButtonRow.append(
+      makeSyncActionButton('儲存', () => {
+        const url = syncUrlInput.value.trim()
+        const token = syncTokenInput.value.trim()
+        if (!url || !token) {
+          setStatus('網址和 token 都要填', '#ff9a9a')
+          return
+        }
+        writeSyncConfig(url, token)
+        setStatus('共享字幕已設定', '#9de89d')
+        setSyncFormVisible(false)
+      }),
+      makeSyncActionButton('清除', () => {
+        GM_setValue(STORAGE_KEYS.syncUrl, '')
+        GM_setValue(STORAGE_KEYS.syncToken, '')
+        syncUrlInput.value = ''
+        syncTokenInput.value = ''
+        setStatus('已停用共享字幕', '#ffd08a')
+        setSyncFormVisible(false)
+      })
+    )
+
+    syncForm.append(syncUrlInput, syncTokenInput, syncButtonRow)
+
+    const syncToggleButton = makeButton('設定共享字幕', () => {
+      const willShow = syncForm.style.display === 'none'
+      if (willShow) fillSyncForm()
+      setSyncFormVisible(willShow)
+    })
+
     body.append(
       status,
       makeButton('重新翻譯這一集', onRetranslate),
       makeButton('中英 / 只看中文', onToggleEnglish),
       makeButton('重設 API key', onResetKey),
-      makeButton('設定共享字幕', onResetSync),
+      syncToggleButton,
+      syncForm,
       makeButton('收起面板', () => {
         clearTimeout(panelState.collapseTimer)
         setPanelExpanded(false)
@@ -1118,7 +1186,7 @@
       }
     }
 
-    const syncConfig = getSyncConfig({ promptIfMissing: !quiet })
+    const syncConfig = getSyncConfig()
 
     // 本機沒有就問共享伺服器，抓到就順便寫進本機快取，下次直接用本機的
     if (!force && syncConfig) {
@@ -1313,14 +1381,6 @@
       onResetKey: () => {
         clearApiKey(CONFIG.engine)
         setStatus('API key 已清除，重新整理後會再問一次', '#ffd08a')
-      },
-      onResetSync: () => {
-        const config = resetSyncConfig()
-        if (config) {
-          setStatus('共享字幕已設定', '#9de89d')
-        } else {
-          setStatus('未使用共享字幕', '#ffd08a')
-        }
       },
     })
 

@@ -284,6 +284,27 @@ if (failed === 0) writeCachedSegments(playbackId, segments)
 
 - **prefetch 靜靜地不動作**（查了兩輪）。第一個假設是 `@connect` 少了 `aihero.dev`，加了 `fetchSameOrigin`（原生 fetch + `credentials: 'include'`）還是不動。**真正原因：`run()` 執行的當下，「下一課」那個 `<a>` 還沒被算繪出來。** 解法：`await waitFor(findNextLessonUrl, { tries: 20, intervalMs: 1000 })`。
 
+### 不要用 window.prompt 做設定介面
+
+同步設定原本用 `window.prompt` 問網址和 token，三個問題：
+
+1. **它會凍結整個頁面的 JavaScript。** 對自動化是致命的 ——
+   `js()` 呼叫會直接 `Runtime.evaluate timed out`，因為頁面根本不動了。
+   ego-browser 偵測到代理動不了，還會自動把控制權轉交給使用者
+   （`ownership: agentDelegatedToUser`），錯誤訊息長得像「使用者接手了」，
+   **很容易誤判成人類介入，其實是自己造成的**。
+2. 看不到目前設定值，想改成別的伺服器只能重打。
+3. 按錯一次取消就寫下 `syncDeclined`，同步永久停用（見下一節）。
+
+實測用 CDP 的 `Page.handleJavaScriptDialog` 去回應這個 prompt，
+試了四五種寫法（先 pageInfo 再回應、setTimeout 排程點擊、盲填）**全部失敗** ——
+值從來沒被填進去，每次都變成「使用者取消」。
+
+改法：面板裡放一個可展開的小表單（兩個 input + 儲存/清除），
+`getSyncConfig` 簡化成「沒設定就安靜回 null」，`syncDeclined` 整個拿掉。
+
+**通則：任何需要自動化驗證的設定流程，都不要用 `window.prompt` / `alert` / `confirm`。**
+
 ### 共享字幕設定：拒絕記號會變成永久壞掉
 
 `getSyncConfig` 用 `settings.syncDeclined` 記住「使用者不想用同步」，
