@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Hero 繁體中文雙語字幕
 // @namespace    fishtv.aihero.zhsub
-// @version      3.7.0
+// @version      3.8.0
 // @description  抓 Mux 的英文字幕檔翻成台灣繁體中文，在影片上疊中英雙語字幕
 // @author       fish
 // @match        https://www.aihero.dev/*
@@ -84,6 +84,10 @@
       enabled: true,
       timeoutMs: 8000,
     }),
+
+    // 翻完再複查一次，抓字面直譯和讀起來不像人話的句子。
+    // 只在第一次翻譯時發生，翻完會快取，所以成本只付一次。
+    review: Object.freeze({ enabled: true }),
 
     // 控制面板：'auto' 平常縮成小圓點、忙碌時自動展開；'always' 一直展開；'off' 完全不顯示
     panelMode: 'auto',
@@ -338,6 +342,112 @@
       .sort((a, b) => a.start - b.start)
   }
 
+  const TOKEN_RE = /\b[A-Za-z][A-Za-z0-9]{3,}\b/g
+
+  const levenshteinDistance = (a, b) => {
+    const la = a.length
+    const lb = b.length
+    if (Math.abs(la - lb) > 1) return 2
+
+    if (la === lb) {
+      let diff = 0
+      for (let i = 0; i < la; i += 1) {
+        if (a[i] !== b[i]) diff += 1
+        if (diff > 1) return 2
+      }
+      return diff
+    }
+
+    const shorter = la < lb ? a : b
+    const longer = la < lb ? b : a
+    let i = 0
+    let j = 0
+    let edits = 0
+
+    while (i < shorter.length && j < longer.length) {
+      if (shorter[i] === longer[j]) {
+        i += 1
+        j += 1
+      } else {
+        edits += 1
+        if (edits > 1) return 2
+        j += 1
+      }
+    }
+
+    return edits + (longer.length - j)
+  }
+
+  const isProperNounToken = (word) => {
+    if (word.length < 4) return false
+    if (word === word.toUpperCase() && /[A-Z]/.test(word)) return true
+    return /^[A-Z]/.test(word)
+  }
+
+  const normalizeTerms = (cues) => {
+    const counts = new Map()
+
+    cues.forEach((cue) => {
+      const tokens = cue.text.match(TOKEN_RE) || []
+      tokens.forEach((token) => {
+        if (!isProperNounToken(token)) return
+        counts.set(token, (counts.get(token) || 0) + 1)
+      })
+    })
+
+    const replacements = new Map()
+    const terms = [...counts.keys()]
+
+    for (let i = 0; i < terms.length; i += 1) {
+      for (let j = i + 1; j < terms.length; j += 1) {
+        const a = terms[i]
+        const b = terms[j]
+        if (a.toLowerCase() === b.toLowerCase()) continue
+        if (levenshteinDistance(a, b) !== 1) continue
+
+        const countA = counts.get(a) || 0
+        const countB = counts.get(b) || 0
+        let majority
+        let minority
+        let majCount
+        let minCount
+
+        if (countA >= countB) {
+          majority = a
+          minority = b
+          majCount = countA
+          minCount = countB
+        } else {
+          majority = b
+          minority = a
+          majCount = countB
+          minCount = countA
+        }
+
+        if (majCount < 3) continue
+        if (majCount < minCount * 3) continue
+        if (!replacements.has(minority)) replacements.set(minority, majority)
+      }
+    }
+
+    if (replacements.size === 0) {
+      return cues.map((cue) => ({ ...cue }))
+    }
+
+    return cues.map((cue) => {
+      let text = cue.text
+      replacements.forEach((majority, minority) => {
+        const escaped = minority.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const re = new RegExp(`\\b${escaped}\\b`, 'g')
+        if (re.test(text)) {
+          log('用詞統一', minority, '→', majority, counts.get(minority))
+          text = text.replace(new RegExp(`\\b${escaped}\\b`, 'g'), majority)
+        }
+      })
+      return { ...cue, text }
+    })
+  }
+
   const fetchAllCues = async (playbackId, onProgress) => {
     const master = await httpGetText(MUX_MASTER(playbackId))
     const subtitleUri = parseSubtitleUri(master)
@@ -358,7 +468,7 @@
       }
     }
 
-    return dedupeCues(collected)
+    return normalizeTerms(dedupeCues(collected))
   }
 
   // ---------------------------------------------------------------------------
@@ -403,9 +513,34 @@
     '不要加任何說明文字或 markdown 標記。',
   ].join('\n')
 
+  const REVIEW_SYSTEM_PROMPT = [
+    '你是台灣繁體中文的字幕審稿人。下面是英文字幕與它的中文翻譯。',
+    '',
+    '你的工作是抓出「意思差很多」或「中文很不自然」的句子，只改這些，其餘一律不動。',
+    '',
+    '要改的情況：',
+    '1. 慣用語、比喻被照字面硬翻。例如講資料或程式時的 sacred，'
+      + '意思是「動不得、碰不得、非常寶貴」，翻成「神聖」就錯了。',
+    '2. 中文讀起來不像台灣人講話，或語序像英文。',
+    '3. 意思跟英文差很多，或漏掉關鍵資訊。',
+    '4. 出現非台灣用詞（視頻、代碼、項目、數據、接口、內存、默認、函數、字符串）。',
+    '5. 出現簡體字。',
+    '',
+    '不要改的情況：',
+    '- 只是用詞可以更好，但意思沒錯 → 不要動',
+    '- 技術名詞、產品名、指令、檔名保留英文是正確的 → 不要動',
+    '- 你只是想換個說法 → 不要動',
+    '',
+    '寧可少改，不要為了改而改。大部分句子應該都不用動。',
+    '',
+    '輸出格式：只回傳一個 JSON 陣列，只放**需要修改**的項目，'
+      + '每個元素是 {"i": 編號, "zh": "改好的中文"}。',
+    '完全不用改就回傳空陣列 []。不要加任何說明文字或 markdown 標記。',
+  ].join('\n')
+
   const state = {
     playbackId: '',
-    lessonTitle: '',
+    lessonContext: { title: '', description: '' },
     running: false,
     stopRendering: null,
     settings: readSettings(),
@@ -413,18 +548,40 @@
 
   // 讓模型知道這一集在講什麼。只看孤立的字幕很容易把慣用語照字面翻，
   // 也比較難判斷聽打錯誤。
-  const readLessonTitle = () => {
+  const readLessonContext = () => {
     const heading = document.querySelector('h1')
     const fromHeading = heading ? heading.textContent.trim() : ''
-    if (fromHeading) return fromHeading.slice(0, 120)
-    return String(document.title || '').replace(/\s*\|\s*$/, '').trim().slice(0, 120)
+    let title = fromHeading
+
+    if (!title) {
+      title = String(document.title || '').replace(/\s*\|\s*.*$/, '').trim()
+    }
+
+    title = title.slice(0, 120)
+
+    let description =
+      document.querySelector('meta[name="description"]')?.content || ''
+
+    if (!description) {
+      description = document.querySelector('meta[property="og:description"]')?.content || ''
+    }
+
+    description = String(description).trim().slice(0, 300)
+
+    return { title, description }
   }
 
   const buildUserPrompt = (items) => {
     const lines = items.map((item) => `${item.i}\t${item.text}`).join('\n')
-    const context = state.lessonTitle
-      ? [`這是線上課程的影片字幕，這一集的主題是：${state.lessonTitle}`, '']
-      : []
+    const ctx = state.lessonContext || {}
+    const context = []
+
+    if (ctx.title) context.push(`這是線上課程的影片字幕，這一集的主題是：${ctx.title}`)
+    if (ctx.description) context.push(`這一集的簡介：${ctx.description}`)
+    if (context.length) {
+      context.push('（以上是背景資訊，用來判斷專有名詞和語氣，不要翻譯這幾行）', '')
+    }
+
     return [
       ...context,
       `以下是 ${items.length} 格連續的英文字幕（格式為「編號 tab 原文」）：`,
@@ -770,6 +927,67 @@
 
   const untranslatedSegments = (cues) =>
     cues.map((cue) => ({ start: cue.start, end: cue.end, en: cue.text, zh: '' }))
+
+  const reviewSegments = async (segments, apiKey) => {
+    if (!CONFIG.review.enabled) return segments
+
+    const withZh = segments.filter((seg) => seg.zh)
+    if (withZh.length === 0) return segments
+
+    try {
+      const lines = segments
+        .map((seg, i) => (seg.zh ? `${i}\t${seg.en}\t${seg.zh}` : null))
+        .filter(Boolean)
+        .join('\n')
+
+      const url = `${CONFIG.gemini.endpoint(CONFIG.gemini.model)}?key=${encodeURIComponent(apiKey)}`
+      const data = await httpPostJson({
+        url,
+        headers: {},
+        body: {
+          system_instruction: { parts: [{ text: REVIEW_SYSTEM_PROMPT }] },
+          contents: [{ role: 'user', parts: [{ text: lines }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: CONFIG.gemini.maxOutputTokens,
+            response_mime_type: 'application/json',
+            thinkingConfig: { thinkingBudget: CONFIG.gemini.thinkingBudget },
+          },
+        },
+      })
+
+      const blockReason = data?.promptFeedback?.blockReason
+      if (blockReason) throw new Error(`Gemini 拒絕回應：${blockReason}`)
+
+      const candidate = data?.candidates?.[0]
+      const parts = candidate?.content?.parts
+      if (!Array.isArray(parts) || parts.length === 0) {
+        throw new Error(`Gemini 沒有回傳內容（finishReason=${candidate?.finishReason || '未知'}）`)
+      }
+
+      const text = parts.map((part) => part.text || '').join('')
+      const list = parseTranslationJson(text, { truncated: candidate?.finishReason === 'MAX_TOKENS' })
+
+      const patched = segments.map((seg) => ({ ...seg }))
+      let changed = 0
+
+      list.forEach((item) => {
+        const i = Number(item?.i)
+        const zh = String(item?.zh || '').trim()
+        if (!Number.isInteger(i) || i < 0 || i >= patched.length) return
+        if (!zh) return
+        if (!patched[i].zh) return
+        if (patched[i].zh !== zh) changed += 1
+        patched[i].zh = zh
+      })
+
+      log('複查完成', changed, '/', withZh.length)
+      return patched
+    } catch (error) {
+      log('複查失敗', error)
+      return segments
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // 播放器
@@ -1236,7 +1454,9 @@
       report(`翻譯中… ${batchIndex + 1}/${totalBatches}`, '#ffd08a')
 
       try {
-        segments.push(...(await translateSlice(slice, apiKey)))
+        const translated = await translateSlice(slice, apiKey)
+        report(`複查中… ${batchIndex + 1}/${totalBatches}`, '#ffd08a')
+        segments.push(...(await reviewSegments(translated, apiKey)))
       } catch (error) {
         log('批次翻譯失敗', error)
         report(`第 ${batchIndex + 1} 批失敗：${error.message}`.slice(0, 70), '#ff9a9a')
@@ -1353,7 +1573,7 @@
         return
       }
       state.playbackId = playbackId
-      state.lessonTitle = readLessonTitle()
+      state.lessonContext = readLessonContext()
 
       setStatus('抓字幕檔…')
       const cues = await fetchAllCues(playbackId, (current, total) => {
