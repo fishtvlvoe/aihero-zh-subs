@@ -383,6 +383,36 @@ Tampermonkey 跟公開版混淆，然後 `gh gist create`（預設就是 secret�
 `el.click()` 在這個頁面是有效的（控制台的名稱、刪除鈕都吃），
 但畫面重繪有延遲，按完要等一下再去確認結果，不然會誤判成沒生效。
 
+### 翻譯品質：字面直譯與缺乏脈絡
+
+實際遇到的案例：`the stuff that's very, very sacred` 被翻成「這些都是非常神聖的」。
+
+**這不是聽打錯誤，英文本身是對的** —— `sacred` 在英文裡是慣用講法，
+形容「碰不得、不能亂動」，在資料庫遷移的脈絡下指「正式資料動不得」。
+問題出在照字典硬翻，中文讀起來很怪。
+
+診斷時要分清楚三種不同的錯誤，修法完全不同：
+
+| 類型 | 例子 | 修法 |
+|---|---|---|
+| 聽打錯誤 | 專有名詞被聽成別的字 | 提示詞第 12 條（已有） |
+| **字面直譯** | sacred → 神聖 | 提示詞加慣用語規則（第 13 條） |
+| 缺乏脈絡 | 不知道這集在講什麼，用詞判斷失準 | 把課程標題帶進 user prompt |
+
+後兩者的修法：
+
+- `SYSTEM_PROMPT` 第 13 條要求「翻意思不要翻字面」，並舉具體例子
+  （sacred、hairy、under the hood）讓模型抓到感覺
+- `state.lessonTitle` 由 `readLessonTitle()` 在 `run()` 時設定一次，
+  `buildUserPrompt` 會把「這一集的主題是：…」放在字幕前面
+
+**注意**：`buildUserPrompt` 原本定義在 `const state` 之前，
+直接引用 `state` 會踩 TDZ（`Cannot access 'state' before initialization`），
+所以 `state` 的宣告必須移到前面。
+
+不改五層函式簽名而用模組層級變數，是因為標題要從 `buildSegments` 一路傳到
+`buildUserPrompt` 中間隔了四層，而一個頁面本來就只有一集，沒必要為此改簽名。
+
 ### 字幕切分
 
 - **切點候選不可以包含空白字元。** 這支腳本刻意把技術名詞保留成英文，

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Hero 繁體中文雙語字幕
 // @namespace    fishtv.aihero.zhsub
-// @version      3.6.0
+// @version      3.7.0
 // @description  抓 Mux 的英文字幕檔翻成台灣繁體中文，在影片上疊中英雙語字幕
 // @author       fish
 // @match        https://www.aihero.dev/*
@@ -393,15 +393,40 @@
       + 'context window、commit、prompt、token、CLAUDE.md、git、API。',
     '11. 這是口語講課，翻得像人在講話，不要書面腔，不要加原文沒有的內容。',
     '12. 原文若有明顯的語音辨識錯誤（專有名詞被聽錯），依上下文判斷正確的詞再翻。',
+    '13. 遇到慣用語、比喻、誇飾，翻「意思」不要翻「字面」。'
+      + '例如講程式或資料時說 sacred，意思是「動不得、碰不得」，不是「神聖」；'
+      + 'hairy 是「棘手」不是「多毛」；under the hood 是「底層運作」不是「引擎蓋下」。'
+      + '照字面硬翻會讓中文看起來很怪，寧可換個說法也要讓人看得懂。',
     '',
     '輸出格式：只回傳一個 JSON 陣列，每個元素是 {"s": 起始編號, "e": 結束編號, "t": "中文翻譯"}。',
     '單一格子自成一組時，s 和 e 填同一個數字。',
     '不要加任何說明文字或 markdown 標記。',
   ].join('\n')
 
+  const state = {
+    playbackId: '',
+    lessonTitle: '',
+    running: false,
+    stopRendering: null,
+    settings: readSettings(),
+  }
+
+  // 讓模型知道這一集在講什麼。只看孤立的字幕很容易把慣用語照字面翻，
+  // 也比較難判斷聽打錯誤。
+  const readLessonTitle = () => {
+    const heading = document.querySelector('h1')
+    const fromHeading = heading ? heading.textContent.trim() : ''
+    if (fromHeading) return fromHeading.slice(0, 120)
+    return String(document.title || '').replace(/\s*\|\s*$/, '').trim().slice(0, 120)
+  }
+
   const buildUserPrompt = (items) => {
     const lines = items.map((item) => `${item.i}\t${item.text}`).join('\n')
+    const context = state.lessonTitle
+      ? [`這是線上課程的影片字幕，這一集的主題是：${state.lessonTitle}`, '']
+      : []
     return [
+      ...context,
       `以下是 ${items.length} 格連續的英文字幕（格式為「編號 tab 原文」）：`,
       '',
       lines,
@@ -1158,13 +1183,6 @@
   // 主流程
   // ---------------------------------------------------------------------------
 
-  const state = {
-    playbackId: '',
-    running: false,
-    stopRendering: null,
-    settings: readSettings(),
-  }
-
   const buildSegments = async (cues, playbackId, { force = false, quiet = false } = {}) => {
     // 背景預抓時不搶狀態列，也不彈視窗問 key
     const report = (text, color) => {
@@ -1335,6 +1353,7 @@
         return
       }
       state.playbackId = playbackId
+      state.lessonTitle = readLessonTitle()
 
       setStatus('抓字幕檔…')
       const cues = await fetchAllCues(playbackId, (current, total) => {
