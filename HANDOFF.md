@@ -284,6 +284,35 @@ if (failed === 0) writeCachedSegments(playbackId, segments)
 
 - **prefetch 靜靜地不動作**（查了兩輪）。第一個假設是 `@connect` 少了 `aihero.dev`，加了 `fetchSameOrigin`（原生 fetch + `credentials: 'include'`）還是不動。**真正原因：`run()` 執行的當下，「下一課」那個 `<a>` 還沒被算繪出來。** 解法：`await waitFor(findNextLessonUrl, { tries: 20, intervalMs: 1000 })`。
 
+### 安裝與更新（很容易踩雷）
+
+- **從網址安裝會裝成第二份，不會覆蓋。** Tampermonkey 是靠來源辨識腳本：
+  手動貼進編輯器建立的那支，跟從網址安裝的那支，即使 `@name` + `@namespace`
+  完全一樣，也會被當成兩支不同的腳本，兩支同時執行 →
+  抓兩次字幕、打兩次 API、疊兩層字幕，畫面會變慢。
+- **要更新既有那支，只能貼進它自己的編輯器。** 路徑：
+  控制台 → 點腳本名稱開編輯器 → `CodeMirror.setValue(新原始碼)` → 點該腳本專屬的儲存鈕。
+- **每支腳本的 GM 儲存是各自獨立的。** API key 跟字幕快取都掛在腳本的 uuid 底下，
+  刪掉哪一支就一起沒了。所以碰到重複時，要留的是**有資料的那支**（通常是舊的），
+  把新程式碼貼進去，然後刪掉新裝的那支。
+- 貼進去之後 Tampermonkey 會把它標記成「本機修改」，
+  控制台上會出現警告圖示：「此腳本已於 … 在被本機修改。更新將會覆蓋您的修改！」
+
+### ego browser 開不了擴充頁的繞法
+
+`openOrReuseTab('chrome-extension://…')` 會卡死（`wait: false` 也一樣），
+但**分頁其實開起來了** —— 卡的是等待握手，不是導航。
+
+繞法：先讓它開（卡住就砍掉那個程序），之後用 `listTabs()` 找出那個分頁，
+`switchTab(targetId)` 切過去，`js()` 就能正常操作了。
+
+另外：`options.html#nav=<b64uuid>+editor` 這種網址片段**開不了編輯器**，
+重新載入只會回到清單或設定頁。要開編輯器得從控制台**點腳本名稱**
+（`document.getElementById('span_<b64uuid>_sname_name').click()`）。
+
+`el.click()` 在這個頁面是有效的（控制台的名稱、刪除鈕都吃），
+但畫面重繪有延遲，按完要等一下再去確認結果，不然會誤判成沒生效。
+
 ### 字幕切分
 
 - **切點候選不可以包含空白字元。** 這支腳本刻意把技術名詞保留成英文，

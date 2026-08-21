@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Hero 繁體中文雙語字幕
 // @namespace    fishtv.aihero.zhsub
-// @version      3.4.2
+// @version      3.5.0
 // @description  抓 Mux 的英文字幕檔翻成台灣繁體中文，在影片上疊中英雙語字幕
 // @author       fish
 // @match        https://www.aihero.dev/*
@@ -13,6 +13,7 @@
 // @connect      api.anthropic.com
 // @connect      mux.com
 // @connect      stream.mux.com
+// @connect      workers.dev
 // @updateURL    https://raw.githubusercontent.com/fishtvlvoe/aihero-zh-subs/main/aihero-zh-subs.user.js
 // @downloadURL  https://raw.githubusercontent.com/fishtvlvoe/aihero-zh-subs/main/aihero-zh-subs.user.js
 // @supportURL   https://github.com/fishtvlvoe/aihero-zh-subs/issues
@@ -77,6 +78,13 @@
     // 看這一集的時候，背景把下一集也抓好翻好，換集就是秒開
     prefetchNextLesson: true,
 
+    // 共享字幕：翻好的結果上傳到自己的 Worker，換電腦就不用重翻。
+    // 沒設定就完全不影響原本的流程。
+    sync: Object.freeze({
+      enabled: true,
+      timeoutMs: 8000,
+    }),
+
     // 控制面板：'auto' 平常縮成小圓點、忙碌時自動展開；'always' 一直展開；'off' 完全不顯示
     panelMode: 'auto',
 
@@ -92,6 +100,8 @@
     claudeKey: 'zhsub_claude_key',
     cachePrefix: 'zhsub_cache_',
     settings: 'zhsub_settings',
+    syncUrl: 'zhsub_sync_url',
+    syncToken: 'zhsub_sync_token',
   })
 
   // ---------------------------------------------------------------------------
@@ -148,18 +158,94 @@
 
   const clearApiKey = (engine) => GM_deleteValue(keyStorageName(engine))
 
+  // 同步設定存在 Tampermonkey 儲存區，不寫進原始碼，這樣腳本可以安全分享。
+  // 使用者按取消就把 sync 關掉，之後不再打擾。
+  const getSyncConfig = ({ promptIfMissing = true } = {}) => {
+    if (!CONFIG.sync.enabled) return null
+
+    const settings = readSettings()
+    if (settings.syncDeclined) return null
+
+    let url = GM_getValue(STORAGE_KEYS.syncUrl, '')
+    let token = GM_getValue(STORAGE_KEYS.syncToken, '')
+
+    if ((!url || !token) && promptIfMissing) {
+      const inputUrl = window.prompt(
+        '共享字幕伺服器網址（留空＝不使用，只存本機）\n例如 https://你的-worker 網址',
+        url || ''
+      )
+      if (inputUrl === null || inputUrl.trim() === '') {
+        writeSettings({ ...settings, syncDeclined: true })
+        return null
+      }
+      const inputToken = window.prompt('伺服器存取 token', token || '')
+      if (inputToken === null || inputToken.trim() === '') {
+        writeSettings({ ...settings, syncDeclined: true })
+        return null
+      }
+      url = inputUrl.trim().replace(/\/+$/, '')
+      token = inputToken.trim()
+      GM_setValue(STORAGE_KEYS.syncUrl, url)
+      GM_setValue(STORAGE_KEYS.syncToken, token)
+    }
+
+    if (!url || !token) return null
+    return { url, token }
+  }
+
+  // 從共享伺服器抓這一集的字幕。沒有就回 null，不算錯誤。
+  const fetchRemoteSegments = async (playbackId, syncConfig) => {
+    try {
+      const text = await httpRequest({
+        method: 'GET',
+        url: `${syncConfig.url}/subs/${encodeURIComponent(playbackId)}`,
+        headers: { Authorization: `Bearer ${syncConfig.token}` },
+        timeout: CONFIG.sync.timeoutMs,
+      })
+      const parsed = JSON.parse(text)
+      const segments = parsed?.segments
+      if (!Array.isArray(segments) || segments.length === 0) return null
+      return segments
+    } catch (error) {
+      // 404 代表還沒人上傳過，是正常的，不用吵
+      log('共享字幕讀取失敗（不影響翻譯）', error)
+      return null
+    }
+  }
+
+  // 把翻好的字幕上傳，讓其他電腦不用重翻。失敗就算了，不要影響使用者。
+  const uploadSegments = async (playbackId, segments, syncConfig) => {
+    try {
+      await httpRequest({
+        method: 'PUT',
+        url: `${syncConfig.url}/subs/${encodeURIComponent(playbackId)}`,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${syncConfig.token}`,
+        },
+        body: { segments },
+        timeout: CONFIG.sync.timeoutMs,
+      })
+      log('已上傳共享字幕', playbackId, segments.length)
+      return true
+    } catch (error) {
+      log('共享字幕上傳失敗（不影響本機使用）', error)
+      return false
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // HTTP：userscript 用 GM_xmlhttpRequest 才不會被 CORS 擋
   // ---------------------------------------------------------------------------
 
-  const httpRequest = ({ method, url, headers = {}, body = null }) =>
+  const httpRequest = ({ method, url, headers = {}, body = null, timeout = 120000 }) =>
     new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method,
         url,
         headers,
         data: body === null ? undefined : JSON.stringify(body),
-        timeout: 120000,
+        timeout,
         onload: (response) => {
           if (response.status < 200 || response.status >= 300) {
             reject(
@@ -1020,6 +1106,20 @@
       }
     }
 
+    const syncConfig = getSyncConfig({ promptIfMissing: !quiet })
+
+    // 本機沒有就問共享伺服器，抓到就順便寫進本機快取，下次直接用本機的
+    if (!force && syncConfig) {
+      report('查詢共享字幕…', '#ffd08a')
+      const remote = await fetchRemoteSegments(playbackId, syncConfig)
+      if (remote) {
+        writeCachedSegments(playbackId, remote)
+        const zh = remote.filter((segment) => segment.zh).length
+        report(`字幕就緒（${zh}/${remote.length} 句，來自共享）`, '#9de89d')
+        return remote
+      }
+    }
+
     const apiKey = getApiKey(CONFIG.engine, { promptIfMissing: !quiet })
     if (!apiKey) {
       report('沒有 API key，只顯示英文', '#ff9a9a')
@@ -1054,6 +1154,11 @@
     // 以前是「一批失敗就整集不存」，結果每次重開都整集重翻、重燒 API 額度。
     // 現在只要有翻到東西就存起來，沒翻到的部分下次可以按「重新翻譯」補。
     if (translated > 0) writeCachedSegments(playbackId, segments)
+
+    // 只有整集都翻好才上傳。半成品傳上去會害到其他電腦。
+    if (syncConfig && translated === segments.length) {
+      await uploadSegments(playbackId, segments, syncConfig)
+    }
 
     const color = translated === segments.length ? '#9de89d' : '#ffd08a'
     report(`字幕就緒（${translated}/${segments.length} 句）`, color)
